@@ -1,0 +1,5 @@
+MODULE MyCompanyCustom;
+
+REQUIRE MyCompany,
+        OperationTypes, WorkOrderOperationCustom, ManufacturingOrderInvCustom, ManufacturingOrderLotCustom,
+        WorkOrderStatusCustom, WorkOrderResCustom, ManufacturingOrderCancelCustom, WorkOrderDateCustom;

@@ -1,0 +1,80 @@
+MODULE ManufacturingOrderInvCustom;
+
+REQUIRE ManufacturingOrderInv, BomCustom, WorkOrderOperationCustom;
+
+NAMESPACE Manufacturing;
+
+fill(ConsumedLine cl, ComponentLine l) +{
+    locationSource(cl) <- overLocationSource(l);
+    locationResult(cl) <- overLocationSource(l);
+}
+
+locationResult = ABSTRACT Location (ManufacturingOrderInvCustom);
+locationSource = ABSTRACT Location (ManufacturingOrderInvLedgerCustom);
+locationSource = ABSTRACT Location (ManufacturingOrderInvLedgerIntermediate);
+
+// Родитель берёт полуфабрикат со склада строкой потребления — этап его не выпускает.
+fromStock (WorkStep s) = GROUP SUM 1 IF sourceLine(ConsumedLine l) = parent(s) AND item(l) = item(s);
+
+// Иначе этап и выпускает полуфабрикат, и берёт его со склада — двойное списание.
+CONSTRAINT fromStock(WorkStep s) AND hasWorkOrder(s)
+    MESSAGE 'Этап производства выпускает полуфабрикат и одновременно берёт его со склада. Снимите операции со спецификации или включите на ней «Промежуточная спецификация»';
+
+CLASS ManufacturingOrderInvCustom 'Оприходывание полуфабриката' : InvLedger;
+manILedger = AGGR ManufacturingOrderInvCustom WHERE done(WorkStep line) AND item(line) IS Product AND NOT fromStock(line);
+
+type(ManufacturingOrderInvCustom l) += nameType(manufacturingOrder(line(l)));
+
+active(ManufacturingOrderInvCustom l) += active(line(l));
+dateTime(ManufacturingOrderInvCustom l) += executionDateTime(line(l));
+toLocation(ManufacturingOrderInvCustom l) += OVERRIDE locationResult(l), locationResult(line(l));
+
+product(ManufacturingOrderInvCustom l) += item(line(l)) AS Product;
+quantity(ManufacturingOrderInvCustom l) += producedQuantity(line(l));
+
+number(ManufacturingOrderInvCustom l) += number(manufacturingOrder(line(l)));
+
+edit (ManufacturingOrderInvCustom l) + { edit(manufacturingOrder(line(l))); }
+
+CLASS ManufacturingOrderInvLedgerCustom 'Consumed materials' : InvLedger;
+manInvLedger = AGGR ManufacturingOrderInvLedgerCustom WHERE done(WorkStep ws) AND sourceLine(ConsumedLine line) = ws AND item(line) IS Product;
+
+// Строки, обрабатываемые через WorkStep, базовыми ledger'ами не проводим.
+skipBaseLedger(ConsumedLine l) += TRUE IF sourceLine(l);
+
+hasWorkStepForItem (FinishedLine l) =
+    GROUP SUM 1 IF manufacturingOrder(WorkStep s) = manufacturingOrder(l) AND item(s) = item(l);
+skipBaseLedger(FinishedLine l) += TRUE IF hasWorkStepForItem(l);
+
+type(ManufacturingOrderInvLedgerCustom l) += nameType(manufacturingOrder(line(l)));
+
+active(ManufacturingOrderInvLedgerCustom l) += active(ws(l));
+// Материал списывается при выполнении этапа, а не при закрытии заказа.
+dateTime(ManufacturingOrderInvLedgerCustom l) += OVERRIDE executionDateTime(sourceLine(line(l))), executionDateTime(line(l));
+fromLocation(ManufacturingOrderInvLedgerCustom l) += OVERRIDE locationSource(l), sourceLocation(line(l));
+
+product(ManufacturingOrderInvLedgerCustom l) += item(line(l)) AS Product;
+quantity(ManufacturingOrderInvLedgerCustom l) += toConsume(line(l));
+
+number(ManufacturingOrderInvLedgerCustom l) += number(manufacturingOrder(line(l)));
+
+edit (ManufacturingOrderInvLedgerCustom l) + { edit(manufacturingOrder(line(l))); }
+
+CLASS ManufacturingOrderInvLedgerIntermediate 'Списание полуфабриката' : InvLedger;
+manInvLedger = AGGR ManufacturingOrderInvLedgerIntermediate WHERE done(WorkStep ws) AND parent(WorkStep line) = ws AND item(line) IS Product AND NOT fromStock(line);
+
+type(ManufacturingOrderInvLedgerIntermediate l) += nameType(manufacturingOrder(line(l)));
+
+active(ManufacturingOrderInvLedgerIntermediate l) += active(ws(l));
+// Родитель потребляет полуфабрикат при своём выполнении, а не при выпуске потомка:
+// иначе буфер между этапами не виден в отчёте на дату.
+dateTime(ManufacturingOrderInvLedgerIntermediate l) += OVERRIDE executionDateTime(ws(l)), executionDateTime(line(l));
+fromLocation(ManufacturingOrderInvLedgerIntermediate l) += OVERRIDE locationSource(l), locationResult(line(l));
+
+product(ManufacturingOrderInvLedgerIntermediate l) += item(line(l)) AS Product;
+// Ровно то, что оприходовали этим этапом — иначе при частичном выпуске уйдёт в минус.
+quantity(ManufacturingOrderInvLedgerIntermediate l) += producedQuantity(line(l));
+
+number(ManufacturingOrderInvLedgerIntermediate l) += number(manufacturingOrder(line(l)));
+
+edit (ManufacturingOrderInvLedgerIntermediate l) + { edit(manufacturingOrder(line(l))); }
