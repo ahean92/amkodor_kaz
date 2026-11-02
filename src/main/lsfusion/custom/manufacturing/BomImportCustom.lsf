@@ -1,0 +1,161 @@
+// Идемпотентный импорт спецификаций, компонентов и побочных продуктов:
+// существующие номера спецификаций и строки состава пропускаются вместо создания дублей,
+// что позволяет загружать полные файлы схожих по составу машин и повторять загрузку.
+// Базовые действия BomImport заменены на форме миграции на эти (без правки базовой конфигурации).
+// APPLY NESTED (skipped) обязателен: обычный APPLY очищает локальные свойства сессии,
+// из-за чего счётчик пропусков читался как NULL и сообщение «Skipped N» не показывалось.
+MODULE BomImportCustom;
+
+REQUIRE BomImport;
+
+NAMESPACE Manufacturing;
+
+bomImportCustom 'Import BOMs' () {
+    LOCAL number = STRING[28] (INTEGER);
+    LOCAL idItem = STRING[50] (INTEGER);
+    LOCAL quantity = NUMERIC[16,3] (INTEGER);
+    LOCAL idUom = STRING[50] (INTEGER);
+    LOCAL skipped = INTEGER ();
+
+    INPUT f = EXCELFILE DO {
+        NEWSESSION {
+            IMPORT XLS HEADER FROM f TO number, idItem, quantity, idUom;
+
+            FOR [GROUP SUM 1 BY idItem(INTEGER i)](num) AND NOT item[STRING](num) DO {
+                MESSAGE 'There is no item the database with the code' + ' ' + num + '... Import canceled';
+                RETURN;
+            }
+
+            skipped() <- 0;
+            FOR imported(INTEGER i) NOINLINE DO {
+                IF bom[STRING](number(i)) THEN
+                    skipped() <- skipped() + 1;
+                ELSE
+                    NEW b = Bom {
+                        number(b) <- number(i);
+                        item(b) <- item(idItem(i));
+                        quantity(b) <- quantity(i);
+                    }
+            }
+
+            APPLY NESTED (skipped);
+            IF canceled() THEN RETURN;
+
+            IF skipped() > 0 THEN
+                MESSAGE 'Import completed. Skipped ' + skipped() + ' BOMs: BOM with this number already exists';
+            ELSE
+                MESSAGE 'Import completed';
+        }
+    }
+}
+
+componentLineImportCustom 'Import components' () {
+    LOCAL id = STRING[28] (INTEGER);
+    LOCAL idItem = STRING[50] (INTEGER);
+    LOCAL quantity = NUMERIC[18,5] (INTEGER);
+    LOCAL idUom = STRING[50] (INTEGER);
+    LOCAL skipped = INTEGER ();
+
+    INPUT f = EXCELFILE DO {
+        NEWSESSION {
+            IMPORT XLS HEADER FROM f TO id, idItem, quantity, idUom;
+
+            FOR [GROUP SUM 1 BY id(INTEGER i)](num) AND NOT bom[STRING](num) DO {
+                MESSAGE 'Missing BOM in database with code' + ' ' + num + '... Import canceled';
+                RETURN;
+            }
+
+            FOR [GROUP SUM 1 BY idItem(INTEGER i)](num) AND NOT item[STRING](num) DO {
+                MESSAGE 'Missing item in database with code' + ' ' + num + '... Import canceled';
+                RETURN;
+            }
+
+            skipped() <- 0;
+            FOR imported(INTEGER i) NOINLINE DO {
+                IF NOT (GROUP SUM 1 IF bom(ComponentLine l) = bom(id(i)) AND item(l) = item(idItem(i))) THEN
+                    NEW l = ComponentLine {
+                        bom(l) <- bom(id(i));
+                        item(l) <- item(idItem(i));
+                        quantity(l) <- quantity(i);
+                    }
+                ELSE
+                    skipped() <- skipped() + 1;
+            }
+
+            APPLY NESTED (skipped);
+            IF canceled() THEN RETURN;
+
+            IF skipped() > 0 THEN
+                MESSAGE 'Import completed. Skipped ' + skipped() + ' lines: item is already in BOM';
+            ELSE
+                MESSAGE 'Import completed';
+        }
+    }
+}
+
+byProductLineImportCustom 'Import byproducts' () {
+    LOCAL id = STRING[28] (INTEGER);
+    LOCAL idItem = STRING[50] (INTEGER);
+    LOCAL quantity = NUMERIC[16,3] (INTEGER);
+    LOCAL idUom = STRING[50] (INTEGER);
+    LOCAL skipped = INTEGER ();
+
+    INPUT f = EXCELFILE DO {
+        NEWSESSION {
+            IMPORT XLS HEADER FROM f TO id, idItem, quantity, idUom;
+
+            FOR [GROUP SUM 1 BY id(INTEGER i)](num) AND NOT bom[STRING](num) DO {
+                MESSAGE 'Missing BOM in database with code' + ' ' + num + '... Import canceled';
+                RETURN;
+            }
+
+            FOR [GROUP SUM 1 BY idItem(INTEGER i)](num) AND NOT item[STRING](num) DO {
+                MESSAGE 'Missing item in database with code' + ' ' + num + '... Import canceled';
+                RETURN;
+            }
+
+            skipped() <- 0;
+            FOR imported(INTEGER i) NOINLINE DO {
+                IF NOT (GROUP SUM 1 IF bom(ByproductLine l) = bom(id(i)) AND product(l) = item(idItem(i))) THEN
+                    NEW l = ByproductLine {
+                        bom(l) <- bom(id(i));
+                        product(l) <- item(idItem(i));
+                        quantity(l) <- quantity(i);
+                    }
+                ELSE
+                    skipped() <- skipped() + 1;
+            }
+
+            APPLY NESTED (skipped);
+            IF canceled() THEN RETURN;
+
+            IF skipped() > 0 THEN
+                MESSAGE 'Import completed. Skipped ' + skipped() + ' lines: product is already in BOM';
+            ELSE
+                MESSAGE 'Import completed';
+        }
+    }
+}
+
+EXTEND FORM migrationData
+    PROPERTIES bomImportCustom(), componentLineImportCustom(), byProductLineImportCustom()
+;
+
+DESIGN migrationData {
+    commons {
+        category {
+            bom {
+                REMOVE PROPERTY(bomImport());
+                MOVE PROPERTY(bomImportCustom()) BEFORE PROPERTY(bomExport());
+            }
+            componentLines {
+                REMOVE PROPERTY(componentLineImport());
+                MOVE PROPERTY(componentLineImportCustom()) BEFORE PROPERTY(componentLineExport());
+            }
+            byProductLines {
+                REMOVE PROPERTY(byProductLineImport());
+                MOVE PROPERTY(byProductLineImportCustom()) BEFORE PROPERTY(byProductLineExport());
+            }
+        }
+    }
+}
