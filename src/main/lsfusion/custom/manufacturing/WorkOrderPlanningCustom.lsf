@@ -1,0 +1,153 @@
+MODULE WorkOrderPlanningCustom;
+
+REQUIRE WorkOrderOperationCustom, WorkOrderFilter, OperationTypes, WorkCenterTypeCustom, NumericUtils;
+
+NAMESPACE Manufacturing;
+
+// Деталь/узел задания: для промежуточных узлов отличается от изделия заказа.
+
+itemBom (WorkOrder w) = OVERRIDE item(bom(w)), item(workStep(w));
+nameItemBom 'Деталь / узел' (WorkOrder w) = name(itemBom(w)) CHARWIDTH 25;
+
+// Материалы на входе: строки материалов этапа, без этапов — компоненты спецификации.
+
+materialStep (WorkOrder w, Item i) =
+    GROUP SUM toConsume(ConsumedLine l) IF sourceLine(l) = workStep(w) AND item(l) = i;
+
+materialBom (Bom b, Item i) =
+    GROUP SUM quantity(ComponentLine l) IF bom(l) = b AND item(l) = i AND NOT intermediate(nestedBom(l));
+
+material 'Кол-во материала' (WorkOrder w, Item i) =
+    OVERRIDE materialStep(w, i), (materialBom(bom(w), i) IF NOT workStep(w));
+
+materials 'Материал' (WorkOrder w) =
+    GROUP CONCAT (CONCAT ' ', name(Item i), trimScale(material(w, i)), name(uom(i))) IF material(w, i),
+        '; ' ORDER name(i), i CHARWIDTH 30;
+
+filterMaterial = DATA LOCAL NESTED Item ();
+nameFilterMaterial 'Материал' () = name(filterMaterial());
+
+typeOperation (WorkOrder w) = type(operation(w));
+nameTypeOperation 'Тип операции' (WorkOrder w) = name(typeOperation(w));
+
+workCenterType (WorkOrder w) = workCenterType(workCenter(w));
+nameWorkCenterType 'Тип рабочего центра' (WorkOrder w) = name(workCenterType(w));
+
+@defineDocFilter(workOrder, WorkCenterType, workCenterType, o, 'Тип рабочего центра');
+
+// Отбор по нескольким типам; LOCAL — отметки не сохраняются и не требуют сохранения формы.
+selectedType 'Отбор' = DATA LOCAL NESTED BOOLEAN (OperationType);
+countSelectedTypes () = GROUP SUM 1 IF selectedType(OperationType t);
+
+resetSelectedTypes 'Сбросить' () {
+    selectedType(OperationType t) <- NULL;
+}
+
+EXTEND FORM workOrders
+    PROPERTIES(o) READONLY nameItemBom BEFORE descriptionBom(o), materials,
+                           nameTypeOperation AFTER name(o), nameWorkCenterType AFTER nameWorkCenter(o)
+
+    PROPERTIES() nameFilterMaterial
+    FILTERS material(o, filterMaterial()) OR NOT filterMaterial()
+
+    OBJECTS ot = OperationType
+    PROPERTIES(ot) selectedType, name READONLY
+    PROPERTIES() resetSelectedTypes DRAW ot TOOLBAR
+    FILTERS selectedType(typeOperation(o)) OR NOT countSelectedTypes()
+;
+
+DESIGN workOrders {
+    filters {
+        MOVE PROPERTY(nameFilterMaterial()) { caption = ''; placeholder = 'Материал'; }
+        MOVE BOX(ot) {
+            caption = 'Типы операций';
+            fill = 1;
+            height = 250;
+        }
+    }
+}
+
+EXTEND FORM workOrder
+    PROPERTIES(o) READONLY nameItemBom, descriptionBom, nameTypeOperation, materials
+;
+
+DESIGN workOrder {
+    headerRight {
+        MOVE PROPERTY(nameItemBom(o));
+        MOVE PROPERTY(descriptionBom(o));
+        MOVE PROPERTY(nameTypeOperation(o));
+    }
+    OBJECTS {
+        MOVE PROPERTY(materials(o)) BEFORE PROPERTY(note(o));
+    }
+}
+
+nameItemStep 'Деталь / узел' (WorkStep s) = nameItem(s) CHARWIDTH 25;
+
+EXTEND FORM manufacturingOrder
+    PROPERTIES(ws) READONLY nameItemStep AFTER name(ws)
+    PROPERTIES(opt) READONLY nameItemBom BEFORE descriptionBom(opt), materials
+;
+
+EXTEND FORM operation
+    PROPERTIES(o) READONLY nameItem AFTER nameBom(o)
+;
+
+EXTEND FORM operations
+    PROPERTIES(o) READONLY nameItem AFTER nameBom(o)
+;
+
+DESIGN workCenter {
+    PROPERTY(name(w)) { tooltip = 'Конкретное место выполнения работ: станок, участок, бригада. Например: «Ленточнопильный станок №1», «Сварочный пост 3».'; }
+    PROPERTY(id(w)) { tooltip = 'Короткий код для поиска и импорта. Например: ЛП-01, СВ-03.'; }
+    PROPERTY(description(w)) { tooltip = 'Свободный текст: цех, ответственный мастер, ограничения по габаритам или материалу.'; }
+    PROPERTY(nameWorkCenterType(w)) { tooltip = 'Группа однотипных рабочих центров (например, «Отрезные станки»). Операция с заданным типом может выполняться только на рабочем центре этого типа.'; }
+}
+
+DESIGN workCenters {
+    PROPERTY(name(w)) { tooltip = 'Конкретное место выполнения работ: станок, участок, бригада.'; }
+    PROPERTY(nameWorkCenterType(w)) { tooltip = 'Группа однотипных рабочих центров.'; }
+}
+
+DESIGN workCenterType {
+    PROPERTY(name(o)) { tooltip = 'Группа однотипного оборудования или участков. Например: «Отрезные станки», «Сварочные посты», «Покрасочная камера».'; }
+    PROPERTY(id(o)) { tooltip = 'Короткий код типа. Например: ОТР, СВ, ПОКР.'; }
+    PROPERTY(description(o)) { tooltip = 'Свободный текст: какие работы выполняются на рабочих центрах этого типа.'; }
+}
+
+DESIGN operationType {
+    PROPERTY(number(o)) { tooltip = 'Код типа операции, заполняется автоматически.'; }
+    PROPERTY(name(o)) { tooltip = 'Вид работы из техпроцесса. Например: «Отрезная», «Снятие фаски», «Сварочная», «Покраска». По типу операции отбираются производственные задания.'; }
+    PROPERTY(defaultDuration(o)) { tooltip = 'Длительность в часах, которая подставляется в операцию спецификации при выборе этого типа. В операции её можно изменить.'; }
+    PROPERTY(nameDefaultWorkCenterType(o)) { tooltip = 'Тип рабочего центра, на котором выполняется операция. Если указан, в операции можно выбрать только рабочий центр этого типа.'; }
+}
+
+DESIGN operation {
+    PROPERTY(nameType(o)) { tooltip = 'Вид работы из справочника типов операций. Подставляет длительность и ограничивает выбор рабочего центра.'; }
+    PROPERTY(name(o)) { tooltip = 'Название операции, как оно будет в производственном задании. Например: «Резка листа 10 мм».'; }
+    PROPERTY(nameBom(o)) { tooltip = 'Спецификация (деталь или узел), по которой выполняется операция.'; }
+    PROPERTY(nameItem(o)) { tooltip = 'Деталь или узел, который выпускает спецификация операции.'; }
+    PROPERTY(nameWorkCenter(o)) { tooltip = 'Где выполняется операция. Копируется в производственное задание.'; }
+    PROPERTY(startTime(o)) { tooltip = 'Плановое время суток начала операции, например 08:00. Дата начала берётся из производственного заказа. Можно не заполнять.'; }
+    PROPERTY(duration(o)) { tooltip = 'Плановая длительность операции в часах (1,5 = полтора часа). Учитывается в загрузке рабочих центров.'; }
+    PROPERTY(nameWorkCenterTypeOperation(o)) { tooltip = 'Тип рабочего центра из типа операции, только для просмотра. Рабочий центр операции должен быть этого типа.'; }
+}
+
+DESIGN operations {
+    PROPERTY(nameType(o)) { tooltip = 'Вид работы из справочника типов операций.'; }
+    PROPERTY(startTime(o)) { tooltip = 'Плановое время суток начала операции.'; }
+    PROPERTY(duration(o)) { tooltip = 'Плановая длительность операции в часах.'; }
+    PROPERTY(nameWorkCenterTypeOperation(o)) { tooltip = 'Тип рабочего центра из типа операции.'; }
+}
+
+DESIGN bom {
+    PROPERTY(name(o)) { tooltip = 'Название операции, как оно будет в производственном задании.'; }
+    PROPERTY(nameWorkCenter(o)) { tooltip = 'Где выполняется операция.'; }
+    PROPERTY(startTime(o)) { tooltip = 'Плановое время суток начала операции, например 08:00. Можно не заполнять.'; }
+    PROPERTY(duration(o)) { tooltip = 'Плановая длительность операции в часах.'; }
+}
+
+DESIGN workOrders {
+    PROPERTY(nameItemBom(o)) { tooltip = 'Деталь или узел, который выпускает задание (для промежуточных узлов отличается от изделия заказа).'; }
+    PROPERTY(materials(o)) { tooltip = 'Что поступает на вход задания: материалы этапа с количеством на весь заказ.'; }
+}
